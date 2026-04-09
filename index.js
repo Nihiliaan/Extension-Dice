@@ -128,7 +128,23 @@ async function doDiceRoll(customDiceFormula, quiet = false, label = '') {
             
             const settings = getSettings();
             if (settings.addToContext) {
-                await context.addChatMessage('system', displayMessage);
+                const newMessage = {
+                    name: 'System',
+                    role: 'system',
+                    mes: displayMessage,
+                    is_system: true,
+                    is_user: false,
+                    send_date: context.timestampToMoment ? context.timestampToMoment(Date.now()).format() : new Date().toISOString(),
+                };
+                context.chat.push(newMessage);
+                if (typeof context.addOneMessage === 'function') {
+                    context.addOneMessage(newMessage);
+                }
+                if (typeof context.saveChatDebounced === 'function') {
+                    context.saveChatDebounced();
+                } else if (typeof context.saveSettingsDebounced === 'function') {
+                    context.saveSettingsDebounced();
+                }
             } else {
                 context.sendSystemMessage('generic', displayMessage, { isSmallSys: true });
             }
