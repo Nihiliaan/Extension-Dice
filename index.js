@@ -129,11 +129,11 @@ async function doDiceRoll(customDiceFormula, quiet = false, label = '') {
             const settings = getSettings();
             if (settings.addToContext) {
                 const newMessage = {
-                    name: 'System',
-                    role: 'system',
+                    name: userName,
+                    role: 'user',
                     mes: displayMessage,
-                    is_system: true,
-                    is_user: false,
+                    is_system: false,
+                    is_user: true,
                     send_date: context.timestampToMoment ? context.timestampToMoment(Date.now()).format() : new Date().toISOString(),
                 };
                 context.chat.push(newMessage);
