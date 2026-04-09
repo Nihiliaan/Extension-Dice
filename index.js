@@ -14,6 +14,7 @@ const TEMPLATE_PATH = 'third-party/Extension-Dice';
 // Define default settings
 const defaultSettings = Object.freeze({
     functionTool: false,
+    addToContext: true,
 });
 
 // Define a function to get or initialize settings
@@ -36,41 +37,107 @@ function getSettings() {
 }
 
 /**
+ * Parses a dice formula and returns a detailed breakdown.
+ * @param {string} formula Dice formula (e.g., 2d4+4+5d4+5)
+ * @returns {{formula: string, breakdown: string, total: number}}
+ */
+function evaluateFormula(formula) {
+    const parts = formula.replace(/\s+/g, '').match(/([+-]?[^+-]+)/g) || [];
+    let totalValue = 0;
+    const breakdownParts = [];
+
+    for (let part of parts) {
+        let isNegative = false;
+        if (part.startsWith('-')) {
+            isNegative = true;
+            part = part.substring(1);
+        } else if (part.startsWith('+')) {
+            part = part.substring(1);
+        }
+
+        const diceMatch = part.match(/^(\d+)d(\d+)$/i);
+        if (diceMatch) {
+            const numDice = parseInt(diceMatch[1]);
+            const numSides = parseInt(diceMatch[2]);
+            const rolls = [];
+            let sum = 0;
+            for (let i = 0; i < numDice; i++) {
+                const roll = Math.floor(Math.random() * numSides) + 1;
+                rolls.push(roll);
+                sum += roll;
+            }
+            totalValue += isNegative ? -sum : sum;
+            const prefix = isNegative ? '-' : (breakdownParts.length > 0 ? '+' : '');
+            breakdownParts.push(`${prefix}${sum}[${rolls.join('+')}]`);
+        } else {
+            const val = parseInt(part);
+            if (!isNaN(val)) {
+                totalValue += isNegative ? -val : val;
+                const prefix = isNegative ? '-' : (breakdownParts.length > 0 ? '+' : '');
+                breakdownParts.push(`${prefix}${val}`);
+            }
+        }
+    }
+
+    return {
+        formula: formula,
+        breakdown: breakdownParts.join(''),
+        total: totalValue,
+    };
+}
+
+/**
  * Roll the dice.
  * @param {string} customDiceFormula Dice formula
  * @param {boolean} quiet Suppress chat output
- * @returns {Promise<{total: string, rolls: Array<string>}>} Roll result
+ * @param {string} label Optional label for the roll
+ * @returns {Promise<string>} Total result as string
  */
-async function doDiceRoll(customDiceFormula, quiet = false) {
-    const nullValue = { total: '', rolls: [] };
-
+async function doDiceRoll(customDiceFormula, quiet = false, label = '') {
     let value = typeof customDiceFormula === 'string' ? customDiceFormula.trim() : $(this).data('value');
 
     if (value == 'custom') {
-        value = await callGenericPopup('Enter the dice formula:<br><i>(for example, <tt>2d6</tt>)</i>', POPUP_TYPE.INPUT, '', { okButton: 'Roll', cancelButton: 'Cancel' });
+        value = await callGenericPopup('输入骰子公式：<br><i>（例如 <tt>2d6</tt>）</i>', POPUP_TYPE.INPUT, '', { okButton: '掷骰', cancelButton: '取消' });
     }
 
-    if (!value) {
-        return nullValue;
-    }
+    if (!value) return '';
 
-    const isValid = SillyTavern.libs.droll.validate(value);
+    // Simple validation: regex for basic dice notation and numbers with operators
+    const isValid = /^(\d+d\d+|\d+)([+-](\d+d\d+|\d+))*(\s+.*)?$/i.test(value);
 
     if (isValid) {
-        const result = SillyTavern.libs.droll.roll(value);
-        if (!result) {
-            return nullValue;
+        // Separate formula from label if not provided
+        let formulaPart = value;
+        let labelPart = label;
+        if (!label && value.includes(' ')) {
+            const spaceIndex = value.indexOf(' ');
+            formulaPart = value.substring(0, spaceIndex);
+            labelPart = value.substring(spaceIndex + 1).trim();
         }
-        if (!quiet) {
-            const context = SillyTavern.getContext();
-            context.sendSystemMessage('generic', `${context.name1} rolls a ${value}. The result is: ${result.total} (${result.rolls.join(', ')})`, { isSmallSys: true });
-        }
-        return { total: String(result.total), rolls: result.rolls.map(String) };
-    } else {
-        toastr.warning('Invalid dice formula');
-        return nullValue;
-    }
 
+        const context = SillyTavern.getContext();
+        const userName = context.name1;
+        const processedFormula = formulaPart.replace(/{{user}}/gi, userName);
+        
+        const result = evaluateFormula(processedFormula);
+        if (!result) return '';
+
+        if (!quiet) {
+            const labelStr = labelPart ? `：${labelPart}` : '';
+            const displayMessage = `${userName}骰了 ${formulaPart}${labelStr}\n${result.breakdown} = ${result.total}`;
+            
+            const settings = getSettings();
+            if (settings.addToContext) {
+                await context.addChatMessage('system', displayMessage);
+            } else {
+                context.sendSystemMessage('generic', displayMessage, { isSmallSys: true });
+            }
+        }
+        return String(result.total);
+    } else {
+        toastr.warning('无效的骰子公式');
+        return '';
+    }
 }
 
 async function addDiceRollButton() {
@@ -89,6 +156,10 @@ async function addDiceRollButton() {
         settings.functionTool = !!$(this).prop('checked');
         SillyTavern.getContext().saveSettingsDebounced();
         registerFunctionTools();
+    });
+    $('#dice_add_to_context').prop('checked', settings.addToContext).on('change', function () {
+        settings.addToContext = !!$(this).prop('checked');
+        SillyTavern.getContext().saveSettingsDebounced();
     });
 
     $(document.body).append(dropdownHtml);
@@ -155,16 +226,14 @@ function registerFunctionTools() {
 
         registerFunctionTool({
             name: 'RollTheDice',
-            displayName: 'Dice Roll',
-            description: 'Rolls the dice using the provided formula and returns the numeric result. Use when it is necessary to roll the dice to determine the outcome of an action or when the user requests it.',
+            displayName: '掷骰子',
+            description: '使用提供的公式掷骰并返回数值结果。当需要掷骰子来决定行动的结果或用户要求时使用。',
             parameters: rollDiceSchema,
             action: async (args) => {
                 if (!args?.formula) args = { formula: '1d6' };
-                const roll = await doDiceRoll(args.formula, true);
-                const result = args.who
-                    ? `${args.who} rolls a ${args.formula}. The result is: ${roll.total}. Individual rolls: ${roll.rolls.join(', ')}`
-                    : `The result or a ${args.formula} roll is: ${roll.total}. Individual rolls: ${roll.rolls.join(', ')}`;
-                return result;
+                const total = await doDiceRoll(args.formula, true);
+                const who = args.who || '系统';
+                return `${who} 掷出了 ${args.formula}，结果为 ${total}`;
             },
             formatMessage: () => '',
         });
@@ -181,15 +250,15 @@ jQuery(async function () {
         aliases: ['r'],
         callback: async (args, value) => {
             const quiet = isTrueBoolean(String(args.quiet));
-            const result = await doDiceRoll(String(value || '1d6'), quiet);
-            return result.total;
+            const resultTotal = await doDiceRoll(String(value || '1d6'), quiet);
+            return resultTotal;
         },
-        helpString: 'Roll the dice.',
-        returns: 'roll result',
+        helpString: '掷骰子。支持公式如 2d6+4 并在其后添加标签。',
+        returns: '掷骰结果数值',
         namedArgumentList: [
             SlashCommandNamedArgument.fromProps({
                 name: 'quiet',
-                description: 'Do not display the result in chat',
+                description: '不在聊天中显示结果',
                 isRequired: false,
                 typeList: [ARGUMENT_TYPE.BOOLEAN],
                 defaultValue: String(false),
@@ -198,7 +267,7 @@ jQuery(async function () {
         ],
         unnamedArgumentList: [
             SlashCommandArgument.fromProps({
-                description: 'dice formula, e.g. 2d6',
+                description: '骰子公式，例如 2d6+4，可后跟标签',
                 isRequired: true,
                 typeList: [ARGUMENT_TYPE.STRING],
             }),
